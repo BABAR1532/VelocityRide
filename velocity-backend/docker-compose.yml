@@ -1,0 +1,278 @@
+version: '3.8'
+
+services:
+  # ─── Infrastructure ──────────────────────────────────────────────────────────
+
+  mongodb:
+    image: mongo:7
+    container_name: velocity-mongodb
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - velocity-net
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: velocity-redis
+    restart: unless-stopped
+    ports:
+      - '6380:6379'
+    networks:
+      - velocity-net
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: velocity-rabbitmq
+    restart: unless-stopped
+    ports:
+      - '5672:5672'
+      - '15672:15672' # Management UI: http://localhost:15672  admin/password
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - velocity-net
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Microservices ───────────────────────────────────────────────────────────
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: velocity-api-gateway
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      AUTH_SERVICE_URL: http://auth-service:3001
+      USER_SERVICE_URL: http://user-service:3002
+      RIDE_SERVICE_URL: http://ride-service:3003
+      CARPOOL_SERVICE_URL: http://carpool-service:3004
+      PARCEL_SERVICE_URL: http://parcel-service:3005
+      NOTIFICATION_SERVICE_URL: http://notification-service:3006
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:3007
+      DRIVER_SERVICE_URL: http://driver-service:3008
+    depends_on:
+      auth-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+    networks:
+      - velocity-net
+
+  auth-service:
+    build: ./auth-service
+    container_name: velocity-auth-service
+    restart: unless-stopped
+    ports:
+      - '3001:3001'
+    environment:
+      PORT: 3001
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_auth?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-velocity_refresh_secret_key}
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  user-service:
+    build: ./user-service
+    container_name: velocity-user-service
+    restart: unless-stopped
+    ports:
+      - '3002:3002'
+    environment:
+      PORT: 3002
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_users?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      REDIS_URL: redis://redis:6379
+      PROFILE_CACHE_TTL: 300       # 5 minutes
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  ride-service:
+    build:
+      context: .
+      dockerfile: ride-service/Dockerfile
+    container_name: velocity-ride-service
+    restart: unless-stopped
+    ports:
+      - '3003:3003'
+    environment:
+      PORT: 3003
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_rides?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:3007
+      ESTIMATE_CACHE_TTL: 120      # 2 minutes
+      DRIVER_LOCK_TTL: 10000       # 10 seconds (ms)
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  driver-service:
+    build: ./driver-service
+    container_name: velocity-driver-service
+    restart: unless-stopped
+    ports:
+      - '3008:3008'
+    environment:
+      PORT: 3008
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_drivers?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  carpool-service:
+    build:
+      context: .
+      dockerfile: carpool-service/Dockerfile
+    container_name: velocity-carpool-service
+    restart: unless-stopped
+    ports:
+      - '3004:3004'
+    environment:
+      PORT: 3004
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_carpool?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+      POOL_LIST_CACHE_TTL: 30      # 30 seconds
+      REDIS_URL: redis://redis:6379
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:3007
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  parcel-service:
+    build:
+      context: .
+      dockerfile: parcel-service/Dockerfile
+    container_name: velocity-parcel-service
+    restart: unless-stopped
+    ports:
+      - '3005:3005'
+    environment:
+      PORT: 3005
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_parcels?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+      SUBSCRIPTION_SERVICE_URL: http://subscription-service:3007
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  notification-service:
+    build: ./notification-service
+    container_name: velocity-notification-service
+    restart: unless-stopped
+    ports:
+      - '3006:3006'
+    environment:
+      PORT: 3006
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_notifications?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+  subscription-service:
+    build: ./subscription-service
+    container_name: velocity-subscription-service
+    restart: unless-stopped
+    ports:
+      - '3007:3007'
+    environment:
+      PORT: 3007
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/velocity_subscriptions?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-velocity_jwt_secret_key}
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://admin:password@rabbitmq:5672
+      PLANS_CACHE_TTL: 3600        # 1 hour
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - velocity-net
+
+volumes:
+  mongo_data:
+  rabbitmq_data:
+
+networks:
+  velocity-net:
+    driver: bridge

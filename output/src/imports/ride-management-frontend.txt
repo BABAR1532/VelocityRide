@@ -1,0 +1,362 @@
+You are an expert senior frontend engineer specializing in React and modern UI architecture. Generate a **complete professional React frontend** for a Ride Management System application.
+
+The frontend should follow **industry-level best practices**, be **component-based**, and have a **clean, minimal, sophisticated interface similar in design philosophy to Uber**.
+
+The design should look like a **production-level dashboard application**, not a simple student UI.
+
+Use **React + modern JavaScript (or TypeScript if preferred)** and a **component-based architecture**.
+
+Use **Tailwind CSS** or a modern styling approach.
+
+The UI must be **fully responsive and modular**.
+
+---
+
+PROJECT STRUCTURE REQUIREMENTS
+
+Use a clean architecture similar to production systems:
+
+src/
+components/
+layout/
+Navbar.jsx
+Sidebar.jsx
+PageContainer.jsx
+cards/
+ServiceCard.jsx
+RideCard.jsx
+ParcelCard.jsx
+ui/
+Button.jsx
+Input.jsx
+Modal.jsx
+Loader.jsx
+
+pages/
+Login.jsx
+Dashboard.jsx
+RideBooking.jsx
+BikeRide.jsx
+CarRide.jsx
+Carpool.jsx
+ParcelDelivery.jsx
+Subscription.jsx
+RideHistory.jsx
+Profile.jsx
+Notifications.jsx
+Settings.jsx
+
+services/
+api.js
+
+styles/
+global.css
+
+App.jsx
+main.jsx
+
+---
+
+DESIGN STYLE REQUIREMENTS
+
+The UI must follow a **premium minimal design similar to Uber's visual identity**.
+
+Primary color palette:
+
+Background: White (#FFFFFF)
+
+Primary text: Black (#000000)
+
+Primary accent: Uber Green (#06C167 or similar)
+
+Secondary colors:
+
+Light gray backgrounds (#F5F5F5)
+
+Border gray (#E5E5E5)
+
+Hover states: darker green
+
+Use **clean spacing, large typography, and subtle shadows**.
+
+Buttons should be rounded and modern.
+
+Avoid bright colors or clutter.
+
+No emojis.
+
+---
+
+TYPOGRAPHY
+
+Use professional modern fonts:
+
+Primary font: Inter
+
+Fallback fonts: system-ui, sans-serif
+
+Typography scale:
+
+Page titles: 32px bold
+
+Section titles: 22px semi-bold
+
+Body text: 16px regular
+
+Small labels: 14px
+
+Maintain consistent spacing and hierarchy.
+
+---
+
+APPLICATION FLOW
+
+The application must follow this navigation structure.
+
+1. LOGIN PAGE
+
+Fields:
+Email
+Password
+
+Components:
+Input fields
+Login button
+Minimal centered card layout
+
+After login redirect to Dashboard.
+
+---
+
+2. DASHBOARD PAGE
+
+The dashboard acts as the **main hub of the application**.
+
+Display service cards for:
+
+Car Ride
+Bike Ride
+Carpool
+Parcel Delivery
+Subscription Plans
+Ride History
+
+Each service should be displayed as a clickable card.
+
+Cards should contain:
+Icon
+Title
+Short description
+Navigation button
+
+---
+
+3. CAR RIDE BOOKING PAGE
+
+Components:
+
+Pickup location input
+Drop location input
+Static map placeholder
+Fare estimate card
+Book ride button
+
+Show ride summary section.
+
+---
+
+4. BIKE RIDE PAGE
+
+Same structure as car ride but with bike icon and cheaper fare estimation.
+
+---
+
+5. CARPOOL PAGE
+
+Features:
+
+Create pool
+Join pool
+Available rides list
+Seat availability indicator
+
+Use card based UI for pool listings.
+
+---
+
+6. PARCEL DELIVERY PAGE
+
+Inputs:
+
+Pickup address
+Drop address
+Package weight
+Package type
+
+Show delivery estimate.
+
+---
+
+7. SUBSCRIPTION PAGE
+
+Show subscription plans:
+
+Basic
+Standard
+Premium
+
+Each card includes:
+
+Price
+Benefits
+Subscribe button
+
+Use a comparison style layout.
+
+---
+
+8. RIDE HISTORY PAGE
+
+Display previous rides in a table or card list.
+
+Fields:
+
+Date
+Ride type
+Pickup
+Drop
+Fare
+Status
+
+Include filtering and search.
+
+---
+
+9. USER PROFILE PAGE
+
+User information:
+
+Name
+Email
+Phone
+Saved locations
+
+Include edit profile button.
+
+---
+
+10. NOTIFICATIONS PAGE
+
+List ride notifications and updates.
+
+Use notification cards with timestamps.
+
+---
+
+11. SETTINGS PAGE
+
+User preferences:
+
+Theme
+Notification toggle
+Account settings
+
+---
+
+LAYOUT REQUIREMENTS
+
+Use a professional dashboard layout:
+
+Top Navbar
+Left Sidebar navigation
+Main content area
+
+Sidebar items:
+
+Dashboard
+Car Ride
+Bike Ride
+Carpool
+Parcel
+Subscriptions
+Ride History
+Notifications
+Profile
+Settings
+
+---
+
+COMPONENT DESIGN
+
+Create reusable components:
+
+Button
+Input
+Card
+Modal
+Loader
+Navbar
+Sidebar
+ServiceCard
+
+All components must be reusable and clean.
+
+---
+
+UI INTERACTIONS
+
+Add modern UI behaviors:
+
+Hover states
+Subtle animations
+Loading states
+Form validation
+Disabled buttons during API calls
+
+---
+
+STATE MANAGEMENT
+
+Use React state or a simple global store.
+
+Prepare for backend integration using an api service file.
+
+Use mock API responses for now.
+
+---
+
+RESPONSIVENESS
+
+The layout must work for:
+
+Desktop
+Tablet
+Mobile
+
+Sidebar should collapse on smaller screens.
+
+Cards should rearrange in grid layout.
+
+---
+
+FINAL REQUIREMENTS
+
+Generate:
+
+Complete React code for all pages
+
+Reusable components
+
+Navigation routing setup
+
+Clean folder structure
+
+Example mock data
+
+Professional styling
+
+The result should look like a **real startup ride-sharing application frontend** suitable for integration with a MERN backend.
+
+Do not include explanations.
+
+Only generate the complete frontend code.
