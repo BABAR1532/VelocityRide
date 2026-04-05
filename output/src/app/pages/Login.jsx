@@ -61,9 +61,9 @@ export function Login() {
     setLoading(true);
     try {
       if (activeTab === 'signin') {
-        await login(email, password, 'customer');
+        await login(email, password, 'user');
       } else {
-        await register(name, email, password, 'customer');
+        await register(name, email, password, 'user');
       }
       navigate('/dashboard');
     } catch (err) {

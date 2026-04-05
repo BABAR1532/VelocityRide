@@ -22,7 +22,8 @@ exports.register = async (req, res, next) => {
     if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
 
     const { name, email, password, role: roleIn, phone, vehicleType, licenseNumber } = req.body;
-    const role = roleIn === 'driver' ? 'driver' : 'customer';
+    // Only two canonical roles: 'user' (passenger) and 'driver'. Default to 'user'.
+    const role = roleIn === 'driver' ? 'driver' : 'user';
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(409).json({ error: 'Email already registered' });
@@ -71,11 +72,13 @@ exports.login = async (req, res, next) => {
     const valid = await user.comparePassword(password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Map legacy 'user' to 'customer' logic
-    const dbRole = user.role === 'user' ? 'customer' : user.role;
-    // For admin, we could allow anything or bypass this if needed, but for now enforce strictly unless admin.
-    if (formRole && dbRole !== 'admin' && dbRole !== formRole) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    // Normalise legacy 'customer' DB role → 'user' so old accounts still work.
+    // Admin bypasses role checks.
+    if (formRole && user.role !== 'admin') {
+      const normalisedDbRole = user.role === 'customer' ? 'user' : user.role;
+      if (normalisedDbRole !== formRole) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
     }
 
     const tokenPayload = { sub: user._id.toString(), email: user.email, name: user.name, role: user.role };

@@ -12,6 +12,17 @@ import { carpoolAPI } from '../services/api';
 import { formatInr } from '../utils/currency';
 import { MapSelector } from '../components/ui/MapSelector';
 
+function getUserId() {
+  try {
+    const token = localStorage.getItem('velocity_access_token');
+    if (!token) return null;
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.sub;
+  } catch {
+    return null;
+  }
+}
+
 // ── Status helpers ─────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -35,11 +46,11 @@ function StatusBadge({ status }) {
 
 // ── Active Pool Card ──────────────────────────────────────────────────────────
 
-function ActivePoolCard({ pool, isCreator, onStartPool, onCancelPool, onLeavePool, busy }) {
-  const [confirmCancel, setConfirmCancel] = useState(false);
+function ActivePoolCard({ pool, isCreator, onStartPool, onDeletePool, onLeavePool, busy, leavingPool }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const canStart   = isCreator && pool.seatsAvailable === 0 && ['open', 'full'].includes(pool.status);
-  const canCancel  = isCreator;
+  const canDelete  = isCreator;
   const canLeave   = !isCreator && ['open', 'full'].includes(pool.status);
   const showMap    = isCreator && ['open', 'full'].includes(pool.status);
   const showLiveMap = ['in_progress'].includes(pool.status);
@@ -113,22 +124,22 @@ function ActivePoolCard({ pool, isCreator, onStartPool, onCancelPool, onLeavePoo
         {/* Creator controls */}
         {isCreator && (
           <div className="flex flex-wrap gap-2 pt-3 border-t border-primary/10">
-            {confirmCancel ? (
+            {confirmDelete ? (
               /* ── Inline confirm step — avoids window.confirm blocking the event loop — */
               <>
                 <p className="text-sm text-destructive font-semibold self-center flex-1">
-                  Cancel this pool? All participants will be notified.
+                  Delete this pool? All participants will be notified and it cannot be undone.
                 </p>
                 <Button
-                  onClick={() => { setConfirmCancel(false); onCancelPool(); }}
+                  onClick={() => { setConfirmDelete(false); onDeletePool(); }}
                   size="sm"
                   disabled={busy}
                   className="bg-destructive text-white hover:bg-destructive/90"
                 >
-                  {busy ? <><Loader className="w-4 h-4 mr-2 animate-spin" />Cancelling…</> : 'Yes, Cancel'}
+                  {busy ? <><Loader className="w-4 h-4 mr-2 animate-spin" />Deleting…</> : 'Yes, Delete'}
                 </Button>
                 <Button
-                  onClick={() => setConfirmCancel(false)}
+                  onClick={() => setConfirmDelete(false)}
                   variant="outline"
                   size="sm"
                   disabled={busy}
@@ -154,15 +165,15 @@ function ActivePoolCard({ pool, isCreator, onStartPool, onCancelPool, onLeavePoo
                   </p>
                 )}
                 <div className="flex-1" />
-                {canCancel && (
+                {canDelete && (
                   <Button
-                    onClick={() => setConfirmCancel(true)}
+                    onClick={() => setConfirmDelete(true)}
                     variant="outline"
                     size="sm"
                     disabled={busy}
                     className="border-destructive/50 text-destructive hover:bg-destructive/10"
                   >
-                    Cancel Pool
+                    Delete Pool
                   </Button>
                 )}
               </>
@@ -177,10 +188,11 @@ function ActivePoolCard({ pool, isCreator, onStartPool, onCancelPool, onLeavePoo
               onClick={onLeavePool}
               variant="outline"
               size="sm"
-              disabled={busy}
+              disabled={busy || leavingPool}
               className="border-destructive/40 text-destructive hover:bg-destructive/10"
             >
-              <LogOut className="w-4 h-4 mr-2" />Leave Pool
+              {(busy || leavingPool) ? <Loader className="w-4 h-4 mr-2 animate-spin" /> : <LogOut className="w-4 h-4 mr-2" />}
+              Leave Pool
             </Button>
           </div>
         )}
@@ -230,10 +242,15 @@ export function Carpool() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState(false);
+  const [joiningPoolId, setJoiningPoolId] = useState(null);
+  const [leavingPool, setLeavingPool] = useState(false);
 
   // Active pool state — null means no active pool
   const [activePool, setActivePool] = useState(null);
-  const [isActiveCreator, setIsActiveCreator] = useState(false);
+  
+  // Dynamically evaluated on every render: ensuring map shows ONLY to true creator
+  const currentUserId = getUserId();
+  const isActiveCreator = Boolean(activePool && currentUserId && activePool.creatorId === currentUserId);
 
   // Create form state
   const [from, setFrom] = useState('');
@@ -251,15 +268,16 @@ export function Carpool() {
   const activePoolIdRef = useRef(null);
   activePoolIdRef.current = activePool?._id || null;
 
-  // IDs explicitly cancelled by user — polling loop must never restore these
-  const cancelledPoolIds = useRef(new Set());
+  // IDs explicitly deleted by user — polling loop must never restore these
+  const deletedPoolIds = useRef(new Set());
 
   // ── Dismiss/clear helper
   const clearActivePool = useCallback(() => {
     setActivePool(null);
-    setIsActiveCreator(false);
     activePoolIdRef.current = null;
   }, []);
+
+  const pollingTimeoutRef = useRef(null);
 
   // ── Unified polling loop
   useEffect(() => {
@@ -285,40 +303,34 @@ export function Carpool() {
 
         // 2. Refresh active pool — use ref so we always have the latest ID
         const poolId = activePoolIdRef.current;
-        if (poolId) {
+        if (poolId && !deletedPoolIds.current.has(poolId)) {
           try {
             const res = await carpoolAPI.getPool(poolId);
             if (!stopped && res.pool) {
-              // If this poolId was explicitly cancelled by the user, never restore it
-              if (cancelledPoolIds.current.has(poolId)) {
-                return;
-              }
+              // Double check against deleted just in case it changed mid-flight
+              if (deletedPoolIds.current.has(poolId)) return;
+              
               if (['completed', 'cancelled'].includes(res.pool.status)) {
                 setActivePool(null);
-                setIsActiveCreator(false);
                 activePoolIdRef.current = null;
               } else {
                 setActivePool(res.pool);
-                setIsActiveCreator(res.isCreator);
               }
             }
           } catch {
             // 404 or network error — pool is gone
             if (!stopped) {
               setActivePool(null);
-              setIsActiveCreator(false);
               activePoolIdRef.current = null;
             }
           }
-        } else {
+        } else if (!poolId) {
           // No known pool — check if user has one on the server
           const res = await carpoolAPI.getMyActivePool();
           if (!stopped && res.pool) {
-            // Never restore a pool the user explicitly cancelled
             const id = res.pool._id?.toString();
-            if (id && cancelledPoolIds.current.has(id)) return;
+            if (id && deletedPoolIds.current.has(id)) return;
             setActivePool(res.pool);
-            setIsActiveCreator(res.isCreator);
           }
         }
 
@@ -332,14 +344,26 @@ export function Carpool() {
       }
     };
 
-    // Single initial load, then poll every 3 seconds
-    setLoading(true);
-    loadAll().then(() => { if (!stopped) setLoading(false); });
-    const interval = setInterval(loadAll, 3000);
+    const runPoll = async () => {
+      setLoading(true);
+      await loadAll();
+      if (!stopped) setLoading(false);
+      
+      const poll = async () => {
+        if (stopped) return;
+        await loadAll();
+        if (!stopped) pollingTimeoutRef.current = setTimeout(poll, 3000);
+      };
+      
+      pollingTimeoutRef.current = setTimeout(poll, 3000);
+    };
+    
+    // Reset deleted IDs when switching tabs naturally ? No, keep deleted pools deleted forever.
+    runPoll();
 
     return () => {
       stopped = true;
-      clearInterval(interval);
+      if (pollingTimeoutRef.current) clearTimeout(pollingTimeoutRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -347,14 +371,14 @@ export function Carpool() {
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
   const handleJoinPool = async (poolId) => {
+    if (joiningPoolId === poolId || busy) return;
     setError(''); setSuccess('');
+    setJoiningPoolId(poolId);
     setBusy(true);
     try {
       const data = await carpoolAPI.joinPool(poolId);
-      // Immediately set the pool from the response — fixes Bug 19
       if (data.pool) {
         setActivePool(data.pool);
-        setIsActiveCreator(false);
       }
       const mp = data.memberPricing;
       if (mp?.velocityMember && mp.memberDiscountAmount > 0) {
@@ -368,12 +392,14 @@ export function Carpool() {
       setError(err.message || 'Failed to join pool');
     } finally {
       setBusy(false);
+      setJoiningPoolId(null);
     }
   };
 
   const handleLeavePool = async () => {
-    if (!activePool) return;
+    if (!activePool || leavingPool) return;
     setError(''); setSuccess('');
+    setLeavingPool(true);
     setBusy(true);
     try {
       await carpoolAPI.leavePool(activePool._id);
@@ -385,6 +411,7 @@ export function Carpool() {
       setError(err.message || 'Failed to leave pool');
     } finally {
       setBusy(false);
+      setLeavingPool(false);
     }
   };
 
@@ -407,10 +434,9 @@ export function Carpool() {
       }
       const departureISO = departure.toISOString();
       const data = await carpoolAPI.createPool(from, to, departureISO, Number(totalSeats), Number(farePerPerson) / 100);
-      // Immediately show the new pool — fixes Bug 19
+      // Immediately show the new pool — fresh state
       if (data.pool) {
         setActivePool(data.pool);
-        setIsActiveCreator(true);
       }
       setSuccess('Carpool created! Fill seats and then tap "Start Pool".');
       setFrom(''); setTo(''); setDepartureDate(''); setDepartureTime('');
@@ -441,7 +467,7 @@ export function Carpool() {
     }
   };
 
-  const handleCancelPool = async () => {
+  const handleDeletePool = async () => {
     if (!activePool?._id) return;
     // Snapshot poolId immediately — never rely on state that may have been updated
     // by the background polling loop between the button click and the API call.
@@ -449,18 +475,29 @@ export function Carpool() {
     setBusy(true);
     setError('');
     try {
-      // Mark this ID as cancelled BEFORE the API call so no in-flight poll can restore it
-      cancelledPoolIds.current.add(poolId);
+      if (pollingTimeoutRef.current) clearTimeout(pollingTimeoutRef.current);
+      // Mark this ID as deleted BEFORE the API call so no in-flight poll can restore it
+      deletedPoolIds.current.add(poolId);
       // Eagerly clear from UI without waiting for the API round-trip
       clearActivePool();
-      await carpoolAPI.cancelPool(poolId);
-      setSuccess('Pool cancelled successfully. All participants have been notified.');
+      await carpoolAPI.deletePool(poolId);
+      setSuccess('Pool deleted successfully. All participants have been notified.');
       const listData = await carpoolAPI.listPools();
       setPools(listData.pools || []);
+      
+      // Restart polling safely
+      const poll = async () => {
+        try {
+          const d = await carpoolAPI.listPools();
+          setPools(d.pools || []);
+        } catch { /* ignore */ }
+        pollingTimeoutRef.current = setTimeout(poll, 3000);
+      };
+      pollingTimeoutRef.current = setTimeout(poll, 3000);
     } catch (err) {
-      // On failure, remove from cancelled set and restore pool so user can retry
-      cancelledPoolIds.current.delete(poolId);
-      setError(err.message || 'Failed to cancel pool');
+      // On failure, remove from deleted set and restore pool so user can retry
+      deletedPoolIds.current.delete(poolId);
+      setError(err.message || 'Failed to delete pool');
     } finally {
       setBusy(false);
     }
@@ -516,9 +553,10 @@ export function Carpool() {
           pool={activePool}
           isCreator={isActiveCreator}
           onStartPool={handleStartPool}
-          onCancelPool={handleCancelPool}
+          onDeletePool={handleDeletePool}
           onLeavePool={handleLeavePool}
           busy={busy}
+          leavingPool={leavingPool}
         />
       )}
 
@@ -627,10 +665,10 @@ export function Carpool() {
                         ) : (
                           <Button
                             onClick={() => handleJoinPool(pool._id)}
-                            disabled={busy || Boolean(activePool) || pool.seatsAvailable === 0}
+                            disabled={busy || Boolean(activePool) || pool.seatsAvailable === 0 || joiningPoolId === pool._id}
                             size="sm"
                           >
-                            {busy ? <Loader className="w-4 h-4 animate-spin" /> : 'Join Pool'}
+                            {joiningPoolId === pool._id ? <><Loader className="w-4 h-4 mr-2 animate-spin" />Joining…</> : 'Join Pool'}
                           </Button>
                         )}
                       </div>

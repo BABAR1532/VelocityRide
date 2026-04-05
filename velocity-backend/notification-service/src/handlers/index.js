@@ -127,7 +127,7 @@ async function onCarpoolDriverCancelled(payload) {
   await createNotification(
     userId, 'carpool',
     'Driver Cancelled Carpool',
-    `The assigned driver for your carpool to ${to} has cancelled. We are looking for a new driver.`,
+    'Your pool ride has been cancelled',
     payload,
   );
 }
@@ -188,10 +188,7 @@ async function onCarpoolAccepted(payload) {
       createNotification(
         userId, 'carpool',
         'Driver Assigned 🎉',
-        `Great news! ${driverName || 'A driver'} has accepted your carpool from ${from} to ${to}.` +
-        (farePerPerson ? ` Fare: ${toInr(farePerPerson)}/seat.` : '') +
-        (dt ? ` Departure: ${dt}.` : '') +
-        ` They are on their way!`,
+        'Your pool ride has been accepted',
         payload,
       )
     )

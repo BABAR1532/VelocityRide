@@ -19,11 +19,13 @@ import { useAuth } from './context/AuthContext';
 
 // ─── Route guards ─────────────────────────────────────────────────────────────
 
+// Requires any authenticated user (either role) — used as wrapper for the main layout.
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuth();
   return isAuthenticated ? children : <Navigate to="/login" replace />;
 }
 
+// Redirects already-authenticated users to their correct home.
 function PublicRoute({ children }) {
   const { isAuthenticated, user } = useAuth();
   if (!isAuthenticated) return children;
@@ -31,6 +33,7 @@ function PublicRoute({ children }) {
   return <Navigate to="/dashboard" replace />;
 }
 
+// Dedicated public route for the driver login page.
 function PublicDriverRoute({ children }) {
   const { isAuthenticated, user } = useAuth();
   if (!isAuthenticated) return children;
@@ -38,12 +41,15 @@ function PublicDriverRoute({ children }) {
   return <Navigate to="/dashboard" replace />;
 }
 
+// User (passenger) pages — blocks drivers from accessing user pages.
 function PassengerOnly({ children }) {
   const { user } = useAuth();
   if (user?.role === 'driver') return <Navigate to="/driver/jobs" replace />;
+  // 'user', 'customer' (legacy), and any other non-driver role → allowed
   return children;
 }
 
+// Driver pages — blocks non-drivers from accessing driver pages.
 function DriverOnly({ children }) {
   const { user } = useAuth();
   if (user?.role !== 'driver') return <Navigate to="/dashboard" replace />;

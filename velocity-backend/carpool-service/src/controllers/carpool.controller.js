@@ -77,20 +77,9 @@ async function safeCacheDel(key) {
 // ─── GET /carpool/pools ────────────────────────────────────────────────────────
 exports.listPools = async (req, res, next) => {
   try {
-    let pools;
-    let fromCache = false;
-    const cached = await safeCacheGet(POOLS_CACHE_KEY);
-    if (cached) {
-      console.log('[Cache HIT] pools:available');
-      pools = JSON.parse(cached);
-      fromCache = true;
-    } else {
-      console.log('[Cache MISS] pools:available');
-      pools = await CarpoolPool.find({ status: 'open', departureTime: { $gt: new Date() } })
-        .sort({ departureTime: 1 }).lean();
-      await safeCacheSet(POOLS_CACHE_KEY, JSON.stringify(pools), POOLS_CACHE_TTL);
-      fromCache = false;
-    }
+    const pools = await CarpoolPool.find({ status: 'open', departureTime: { $gt: new Date() } })
+      .sort({ departureTime: 1 }).lean();
+    const fromCache = false;
 
     const mem = await membership.getVelocityMembership(req.headers.authorization);
     const pct = mem.velocityMember ? mem.memberDiscountPercent : 0;
@@ -132,7 +121,7 @@ exports.getMyActivePool = async (req, res, next) => {
     }
     
     const pool = await CarpoolPool.findOne(query).sort({ createdAt: -1 }).lean();
-    res.json({ pool: pool || null, isCreator: pool ? pool.creatorId === userId : false });
+    res.json({ pool: pool || null, isCreator: pool ? pool.creatorId.toString() === userId.toString() : false });
   } catch (err) { next(err); }
 };
 
@@ -142,7 +131,7 @@ exports.getPool = async (req, res, next) => {
     const pool = await CarpoolPool.findById(req.params.id).lean();
     if (!pool) return res.status(404).json({ error: 'Pool not found' });
     
-    const isCreator = pool.creatorId === req.userId;
+    const isCreator = pool.creatorId.toString() === req.userId.toString();
     res.json({ pool, isCreator });
   } catch (err) { next(err); }
 };
@@ -344,27 +333,18 @@ exports.deletePool = async (req, res, next) => {
     if (!pool) return res.status(404).json({ error: 'Pool not found' });
 
     if (pool.creatorId.toString() !== req.userId.toString()) {
-      return res.status(403).json({ error: 'You cannot cancel this pool because you did not create it' });
+      return res.status(403).json({ error: 'You cannot delete this pool because you did not create it' });
     }
     
-    if (['completed', 'cancelled'].includes(pool.status)) {
-      return res.status(409).json({ error: 'Pool is already completed or cancelled' });
-    }
-
+    // We remove the block preventing deletion if completed/cancelled,
+    // so the creator can always physically purge the pool if they wish.
+    
     const poolId = pool._id.toString();
     const bookings = await CarpoolBooking.find({ poolId: req.params.id });
 
-    console.log(`[Carpool] Creator cancelling pool ${poolId} (status=${pool.status}, bookings=${bookings.length}, driverId=${pool.driverId || 'none'})`);
+    console.log(`[Carpool] Creator permanently deleting pool ${poolId} (status=${pool.status}, bookings=${bookings.length}, driverId=${pool.driverId || 'none'})`);
 
-    // If no one is using the pool yet and no driver assigned, physically remove it
-    if (bookings.length === 0 && !pool.driverId) {
-      await CarpoolPool.findByIdAndDelete(pool._id);
-      await safeCacheDel(POOLS_CACHE_KEY);
-      console.log(`[Carpool] Empty pool ${poolId} permanently deleted`);
-      return res.json({ message: 'Pool deleted successfully' });
-    }
-
-    // ── Soft cancel: mark cancelled and notify all parties ──────────────────
+    // ── Notify all parties before deletion ──────────────────
 
     // 1. Notify assigned driver (if any) — includes poolId so driver-service can clean Redis
     if (pool.driverId) {
@@ -375,10 +355,10 @@ exports.deletePool = async (req, res, next) => {
         from: pool.from,
         to: pool.to,
       });
-      console.log(`[Carpool] Notified driver ${pool.driverId} of cancellation for pool ${poolId}`);
+      console.log(`[Carpool] Notified driver ${pool.driverId} of deletion for pool ${poolId}`);
     }
 
-    // 2. Notify each joined passenger — includes poolId so driver-service can clean Redis
+    // 2. Notify each joined passenger
     for (const booking of bookings) {
       await mq.publish('carpool.cancelled', {
         userId:  booking.userId,
@@ -398,15 +378,14 @@ exports.deletePool = async (req, res, next) => {
       to:      pool.to,
     });
 
-    // 4. Update pool and all bookings to cancelled
-    pool.status = 'cancelled';
-    await pool.save();
-    await CarpoolBooking.updateMany({ poolId: req.params.id }, { $set: { status: 'cancelled' } });
+    // 4. Physically delete the pool and all associated bookings
+    await CarpoolPool.findByIdAndDelete(req.params.id);
+    await CarpoolBooking.deleteMany({ poolId: req.params.id });
 
     await safeCacheDel(POOLS_CACHE_KEY);
-    console.log(`[Carpool] Pool ${poolId} soft-cancelled successfully`);
+    console.log(`[Carpool] Pool ${poolId} hard-deleted successfully`);
 
-    res.json({ message: 'Pool cancelled successfully', pool });
+    res.json({ message: 'Pool deleted successfully' });
   } catch (err) { next(err); }
 };
 
