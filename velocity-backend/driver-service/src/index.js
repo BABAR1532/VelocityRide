@@ -97,7 +97,21 @@ async function start() {
     // ── 2. Earnings — ride/carpool/parcel completion ────────────────────────────
     await consume('ride.completed',    async (msg) => saveEarning(msg, 'ride'));
     await consume('carpool.completed', async (msg) => saveEarning(msg, 'carpool'));
-    await consume('parcel.delivered',  async (msg) => saveEarning(msg, 'parcel'));
+    await consume('parcel.delivered',  async (msg) => {
+      await saveEarning(msg, 'parcel');
+      // BUG FIX: remove the delivered parcel from Redis pending cache so it
+      // no longer shows up in the driver's "Parcel Requests" section.
+      const jobId = msg.parcelId || msg._id;
+      await removeJob(jobId);
+      // Also free the driver so they are AVAILABLE for the next job.
+      if (msg.driverId) {
+        await DriverProfile.updateOne(
+          { userId: msg.driverId },
+          { status: 'AVAILABLE', currentJobId: null }
+        );
+        console.log(`[Driver Service] Driver ${msg.driverId} freed after parcel ${jobId} delivered`);
+      }
+    });
 
     // ── 3. Cache pending ride jobs for drivers ─────────────────────────────────
     await consume('ride.booked', async (msg) => {
@@ -132,21 +146,57 @@ async function start() {
     await consume('ride.cancelled',  async (msg) => removeJob(msg.rideId || msg._id));
     // ride cancelled by driver publishes rideId as well
     await consume('ride.cancelled_by_driver', async (msg) => removeJob(msg.rideId || msg._id));
+    // BUG FIX: when a rider cancels an already-accepted ride, free the driver
+    await consume('ride.cancelled_by_rider_for_driver', async (msg) => {
+      const jobId = msg.rideId || msg._id;
+      await removeJob(jobId);
+      if (msg.driverId) {
+        await DriverProfile.updateOne(
+          { userId: msg.driverId },
+          { status: 'AVAILABLE', currentJobId: null }
+        );
+        console.log(`[Driver Service] Driver ${msg.driverId} freed after ride ${jobId} cancelled by rider`);
+      }
+    });
 
     // parcel events — parcel claimed = accepted
     await consume('parcel.claimed',    async (msg) => removeJob(msg.parcelId || msg._id));
     await consume('parcel.accepted',   async (msg) => removeJob(msg.parcelId || msg._id));
     await consume('parcel.cancelled',  async (msg) => removeJob(msg.parcelId || msg._id));
-    await consume('parcel.cancelled_for_driver', async (msg) => removeJob(msg.parcelId || msg._id));
+    await consume('parcel.cancelled_for_driver', async (msg) => {
+      const jobId = msg.parcelId || msg._id;
+      await removeJob(jobId);
+      // Also free the driver so they can accept new jobs
+      if (msg.driverId) {
+        await DriverProfile.updateOne(
+          { userId: msg.driverId },
+          { status: 'AVAILABLE', currentJobId: null }
+        );
+        console.log(`[Driver Service] Driver ${msg.driverId} freed after parcel ${jobId} cancelled/rejected`);
+      }
+    });
 
     // carpool events
     await consume('carpool.accepted',  async (msg) => removeJob(msg._id || msg.poolId || msg.carpoolId));
     await consume('carpool.started',   async (msg) => removeJob(msg._id || msg.poolId || msg.carpoolId));
     // carpool.cancelled is published per-passenger — carry poolId now
     await consume('carpool.cancelled', async (msg) => removeJob(msg.poolId || msg._id || msg.carpoolId));
-    // When creator cancels after driver was assigned — clean up driver's Redis job
-    await consume('carpool.cancelled_by_creator_for_driver', async (msg) => removeJob(msg.poolId || msg._id || msg.carpoolId));
-
+    // When creator cancels after driver was assigned — clean up driver's Redis job AND free the driver
+    await consume('carpool.cancelled_by_creator_for_driver', async (msg) => {
+      const jobId = msg.poolId || msg._id || msg.carpoolId;
+      await removeJob(jobId);
+      // BUG FIX: also reset driver status so they can accept new jobs
+      if (msg.driverId) {
+        await DriverProfile.updateOne(
+          { userId: msg.driverId },
+          { status: 'AVAILABLE', currentJobId: null }
+        );
+        console.log(`[Driver Service] Driver ${msg.driverId} freed after carpool ${jobId} cancelled by creator`);
+      }
+    });
+    // When creator cancels and there are no passengers, this is the only event fired!
+    await consume('carpool.cancelled_by_creator', async (msg) => removeJob(msg.poolId || msg._id || msg.carpoolId));
+    
     app.listen(PORT, () => console.log(`[Driver Service] Running on port ${PORT}`));
   } catch (err) {
     console.error('[Driver Service] Startup failed:', err.message);

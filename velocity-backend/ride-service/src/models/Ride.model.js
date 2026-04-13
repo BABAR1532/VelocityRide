@@ -18,6 +18,7 @@ const rideSchema = new mongoose.Schema(
     },
     driverName: { type: String, default: 'Assigning…' },
     driverId:   { type: String, default: null },
+    rejectedBy: { type: [String], default: [] },
     rating:     { type: Number, min: 1, max: 5, default: null },
   },
   { timestamps: true },

@@ -18,7 +18,8 @@ exports.getProfile = async (req, res) => {
         phone: '',
         vehicleType: 'car',
         licenseNumber: '',
-        status: 'active',
+        licenseNumber: '',
+        status: 'AVAILABLE',
         availability: true,
         _isDefault: true,          // hint for frontend
       });
@@ -98,7 +99,12 @@ exports.getJobs = async (req, res) => {
     const pending  = [];
     for (const key of jobsKeys) {
       const data = await redis.get(key);
-      if (data) pending.push(JSON.parse(data));
+      if (data) {
+        const parsed = JSON.parse(data);
+        if (!parsed.rejectedBy || !parsed.rejectedBy.includes(userId)) {
+          pending.push(parsed);
+        }
+      }
     }
     pending.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -125,13 +131,34 @@ exports.getJobs = async (req, res) => {
       fetchActive(process.env.CARPOOL_SERVICE_URL || 'http://carpool-service:3004', 'carpool'),
     ]);
 
-    const active = [
+    const rawActive = [
       ...activeRides.map   (r => ({ ...r, jobType: 'ride'    })),
       ...activeParcels.map (p => ({ ...p, jobType: 'parcel'  })),
       ...activeCarpools.map(c => ({ ...c, jobType: 'carpool' })),
     ];
 
-    res.json({ pending, active });
+    // Strict active filter: only count jobs that are truly in-progress
+    // PENDING parcels assigned to driver are NOT active (they've been re-queued)
+    const active = rawActive.filter(j => {
+      if (j.jobType === 'parcel')  return ['ASSIGNED', 'PICKED_UP', 'in_transit', 'out_for_delivery'].includes(j.status);
+      if (j.jobType === 'ride')    return ['accepted', 'in_progress'].includes(j.status);
+      if (j.jobType === 'carpool') return ['scheduled', 'in_progress'].includes(j.status);
+      return false;
+    });
+
+    let finalStatus = profile?.status || 'AVAILABLE';
+    let finalCurrentJobId = profile?.currentJobId || null;
+
+    // Auto-heal: if driver has no truly-active jobs but DB says BUSY or has a currentJobId, reset them.
+    // This is the primary recovery path for ghost/stuck states.
+    if (active.length === 0 && (finalStatus === 'BUSY' || finalCurrentJobId)) {
+      await DriverProfile.updateOne({ userId }, { status: 'AVAILABLE', currentJobId: null });
+      finalStatus = 'AVAILABLE';
+      finalCurrentJobId = null;
+      console.log(`[Driver Service] Auto-healed stuck driver ${userId} (was: ${finalStatus}, jobId: ${finalCurrentJobId})`);
+    }
+
+    res.json({ pending, active, driverStatus: finalStatus, currentJobId: finalCurrentJobId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -151,7 +178,7 @@ exports.getHistory = async (req, res) => {
         _id:            e.jobId,
         type:           e.jobType,
         fare:           e.amount,
-        status:         e.jobType === 'parcel' ? 'delivered' : 'completed',
+        status:         e.jobType === 'parcel' ? 'DELIVERED' : 'completed',
         createdAt:      e.createdAt,
         from:           e.from || 'Origin',
         to:             e.to   || 'Destination',
@@ -214,16 +241,82 @@ async function forwardJobAction(req, actionMethod, actionPath, extraBody = undef
   return { status: response.status, data };
 }
 
-// ── POST /drivers/jobs/:type/:id/accept ───────────────────────────────────────
 exports.acceptJob = async (req, res) => {
   try {
+    const userId = req.headers['x-user-id'];
+
+    // ── Ensure profile exists (auto-create for drivers whose RabbitMQ event was missed) ──
+    await DriverProfile.findOneAndUpdate(
+      { userId },
+      {
+        $setOnInsert: {
+          name:         decodeURIComponent(req.headers['x-user-name'] || 'Driver'),
+          email:        req.headers['x-user-email'] || '',
+          status:       'AVAILABLE',
+          currentJobId: null,
+        },
+      },
+      { upsert: true, new: false }
+    );
+
+    // ── Nuclear self-heal before atomic claim ──────────────────────────────────
+    // Reset the driver to AVAILABLE if they are in ANY non-AVAILABLE state.
+    // This handles: stuck BUSY states, legacy 'active' values, and any other
+    // stale status that would block the atomic findOneAndUpdate below.
+    const stuckProfile = await DriverProfile.findOne({ userId }).lean();
+    if (stuckProfile && stuckProfile.status !== 'AVAILABLE') {
+      console.log(`[Driver Service] acceptJob: force-resetting driver ${userId} from status='${stuckProfile.status}' (currentJobId: ${stuckProfile.currentJobId || 'none'})`);
+      await DriverProfile.updateOne({ userId }, { status: 'AVAILABLE', currentJobId: null });
+    }
+
+    // ── Atomic: set BUSY if AVAILABLE (which we just ensured above) ──────────
+    const updatedDriver = await DriverProfile.findOneAndUpdate(
+      { userId, status: 'AVAILABLE' },
+      { status: 'BUSY', currentJobId: req.params.id },
+      { new: true }
+    );
+    if (updatedDriver) {
+      console.log(`[Driver Service] acceptJob: driver ${userId} → BUSY for job ${req.params.id}`);
+    }
+    if (!updatedDriver) {
+      // Should be extremely rare — only if a concurrent acceptJob fired between our reset and this update
+      const current = await DriverProfile.findOne({ userId }).lean();
+      const reason = current
+        ? `Driver is currently ${current.status} (jobId: ${current.currentJobId || 'none'})`
+        : 'Driver profile not found';
+      return res.status(409).json({ error: 'Driver already has an active job or is not available', reason });
+    }
+
     let actionPath;
     if (req.params.type === 'parcel')       actionPath = '/claim';
     else if (req.params.type === 'carpool') actionPath = '/driver-accept';
     else                                    actionPath = '/accept';
+    
     const { status, data } = await forwardJobAction(req, 'POST', actionPath);
+    if (status >= 400) {
+      await DriverProfile.findOneAndUpdate({ userId }, { status: 'AVAILABLE', currentJobId: null });
+    }
     res.status(status).json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    await DriverProfile.findOneAndUpdate({ userId: req.headers['x-user-id'] }, { status: 'AVAILABLE', currentJobId: null });
+    res.status(500).json({ error: err.message }); 
+  }
+};
+
+// ── POST /drivers/jobs/reset-status — emergency self-heal for stuck BUSY state ─
+exports.resetStatus = async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'];
+    const profile = await DriverProfile.findOneAndUpdate(
+      { userId },
+      { status: 'AVAILABLE', currentJobId: null },
+      { new: true }
+    );
+    if (!profile) return res.status(404).json({ error: 'Driver profile not found' });
+    res.json({ message: 'Driver status reset to AVAILABLE', profile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 // ── PATCH /drivers/jobs/:type/:id/start ──────────────────────────────────────
@@ -233,7 +326,7 @@ exports.startJob = async (req, res) => {
     let extraBody  = undefined;
     if (req.params.type === 'parcel') {
       actionPath = '/status';
-      extraBody  = { status: 'picked_up' };
+      extraBody  = { status: 'PICKED_UP' };
     } else if (req.params.type === 'carpool') {
       actionPath = '/start';
     }
@@ -249,11 +342,14 @@ exports.completeJob = async (req, res) => {
     let extraBody  = undefined;
     if (req.params.type === 'parcel') {
       actionPath = '/status';
-      extraBody  = { status: 'delivered' };
+      extraBody  = { status: 'DELIVERED' };
     } else if (req.params.type === 'carpool') {
       actionPath = '/complete';
     }
     const { status, data } = await forwardJobAction(req, 'PATCH', actionPath, extraBody);
+    if (status < 400) {
+      await DriverProfile.findOneAndUpdate({ userId: req.headers['x-user-id'] }, { status: 'AVAILABLE', currentJobId: null });
+    }
     res.status(status).json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 };
@@ -265,12 +361,15 @@ exports.cancelJob = async (req, res) => {
     let extraBody  = undefined;
     if (req.params.type === 'parcel') {
       actionPath = '/status';
-      extraBody  = { status: 'cancelled' };
+      extraBody  = { status: 'PENDING' };
     } else if (req.params.type === 'carpool') {
       actionPath = '/cancel';
       extraBody  = undefined;
     }
     const { status, data } = await forwardJobAction(req, 'PATCH', actionPath, extraBody);
+    if (status < 400) {
+      await DriverProfile.findOneAndUpdate({ userId: req.headers['x-user-id'] }, { status: 'AVAILABLE', currentJobId: null });
+    }
     res.status(status).json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 };

@@ -26,6 +26,9 @@ async function request(path, options = {}) {
 
   if (!res.ok) {
     let msg = data.error || data.message;
+    if (data.reason) {
+      msg = msg ? `${msg} (${data.reason})` : data.reason;
+    }
     if (!msg && data.errors && data.errors.length > 0) {
       msg = data.errors[0].msg;
     }
@@ -142,6 +145,7 @@ export const driverAPI = {
   startJob: (type, id) => request(`/drivers/jobs/${type}/${id}/start`, { method: 'PATCH' }),
   completeJob: (type, id) => request(`/drivers/jobs/${type}/${id}/complete`, { method: 'PATCH' }),
   cancelJob: (type, id) => request(`/drivers/jobs/${type}/${id}/cancel`, { method: 'PATCH' }),
+  resetStatus: () => request('/drivers/jobs/reset-status', { method: 'POST' }),
 };
 
 // ─── Carpool API ───────────────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ router.get('/',          ctrl.listParcels);
 router.post('/:id/claim', requireDriver, ctrl.claimParcel);
 router.get('/:id',       ctrl.getParcel);
 router.patch('/:id/status', [
-  body('status').isIn(['picked_up','in_transit','out_for_delivery','delivered','cancelled']),
+  body('status').isIn(['PENDING','ASSIGNED','PICKED_UP','DELIVERED','CANCELLED','picked_up','in_transit','out_for_delivery','delivered','cancelled']),
 ], ctrl.updateStatus);
 
 module.exports = router;

@@ -8,7 +8,8 @@ const driverProfileSchema = new mongoose.Schema({
   phone:         { type: String },
   vehicleType:   { type: String, enum: ['car', 'bike'] },
   licenseNumber: { type: String },
-  status:        { type: String, enum: ['active', 'inactive'], default: 'active' },
+  status:        { type: String, default: 'AVAILABLE' },
+  currentJobId:  { type: String, default: null },
   availability:  { type: Boolean, default: true }
 }, { timestamps: true });
 

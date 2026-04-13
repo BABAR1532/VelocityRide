@@ -195,6 +195,11 @@ exports.acceptRide = async (req, res, next) => {
     const ride = await lock.withLock(`lock:ride:${rideId}`, async () => {
       const currentRide = await Ride.findById(rideId);
       if (!currentRide) throw new Error('Ride not found');
+      
+      if (currentRide.driverId === driverId && currentRide.status === 'accepted') {
+        return currentRide;
+      }
+
       if (currentRide.status !== 'pending') throw new Error('Ride is no longer pending or already accepted');
 
       currentRide.driverId = driverId;
@@ -299,12 +304,26 @@ exports.cancelRide = async (req, res, next) => {
       if (!['accepted', 'in_progress'].includes(ride.status)) {
         return res.status(409).json({ error: 'Ride cannot be cancelled' });
       }
-      ride.status = 'cancelled';
+      ride.status = 'pending';
+      ride.driverId = null;
+      ride.driverName = 'Assigning…';
+      ride.rejectedBy.push(req.userId);
       await ride.save();
+
+      await mq.publish('ride.booked', {
+        rideId: ride._id.toString(),
+        userId: ride.userId,
+        driverName: ride.driverName,
+        from: ride.from,
+        to: ride.to,
+        type: ride.type,
+        fare: ride.fare,
+      });
+
       await mq.publish('ride.cancelled_by_driver', {
         userId: ride.userId,
         rideId: ride._id.toString(),
-        driverId: ride.driverId,
+        driverId: req.userId,
         from: ride.from,
         to: ride.to,
       });

@@ -4,7 +4,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { driverAPI } from '../services/api';
 import { formatInr } from '../utils/currency';
-import { Loader, AlertCircle, Play, CheckCircle, Flag, MapPin, DollarSign } from 'lucide-react';
+import { Loader, AlertCircle, Play, CheckCircle, Flag, MapPin, DollarSign, RefreshCw } from 'lucide-react';
 
 export function DriverJobs() {
   const [pendingRides, setPendingRides] = useState([]);
@@ -16,16 +16,21 @@ export function DriverJobs() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [driverStatus, setDriverStatus] = useState('AVAILABLE');
 
   const load = async () => {
+    setError(''); // clear any previous accept error on every refresh cycle
     try {
-      const { pending, active } = await driverAPI.getJobs();
+      const { pending, active, driverStatus: dStatus } = await driverAPI.getJobs();
+      const PARCEL_TERMINAL = ['DELIVERED', 'CANCELLED', 'delivered', 'cancelled'];
       setPendingRides(pending.filter(j => j.jobType === 'ride'));
-      setAvailableParcels(pending.filter(j => j.jobType === 'parcel'));
+      // Safety: exclude any parcel that already has a terminal status (e.g. stale Redis entry)
+      setAvailableParcels(pending.filter(j => j.jobType === 'parcel' && !PARCEL_TERMINAL.includes(j.status)));
       setPendingCarpools(pending.filter(j => j.jobType === 'carpool'));
       setActiveRides(active.filter(j => j.jobType === 'ride'));
-      setActiveParcels(active.filter(j => j.jobType === 'parcel' && !['delivered', 'cancelled'].includes(j.status)));
+      setActiveParcels(active.filter(j => j.jobType === 'parcel' && !PARCEL_TERMINAL.includes(j.status)));
       setActiveCarpools(active.filter(j => j.jobType === 'carpool' && !['completed', 'cancelled'].includes(j.status)));
+      if (dStatus) setDriverStatus(dStatus);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -53,6 +58,19 @@ export function DriverJobs() {
   };
 
   const hasActiveJob = activeRides.length > 0 || activeParcels.length > 0 || activeCarpools.length > 0;
+
+  const handleReset = async () => {
+    setBusyId('__reset__');
+    setError('');
+    try {
+      await driverAPI.resetStatus();
+      await load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusyId('');
+    }
+  };
 
   return (
     <PageContainer title="Available Jobs" subtitle="Accept rides and deliver parcels">
@@ -134,14 +152,19 @@ export function DriverJobs() {
                     </div>
 
                     <div className="flex flex-wrap gap-2 pt-2 border-t border-border">
-                      {p.status === 'scheduled' && (
+                      {p.status === 'ASSIGNED' && (
                         <Button size="sm" onClick={() => run(p._id, id => driverAPI.startJob('parcel', id))} disabled={busyId === p._id}>
                           {busyId === p._id ? <Loader className="w-4 h-4 animate-spin mr-1" /> : <Play className="w-4 h-4 mr-1" />} Mark as Picked Up
                         </Button>
                       )}
-                      {(p.status === 'picked_up' || p.status === 'in_transit' || p.status === 'out_for_delivery') && (
+                      {(p.status === 'PICKED_UP' || p.status === 'in_transit' || p.status === 'out_for_delivery') && (
                         <Button size="sm" onClick={() => run(p._id, id => driverAPI.completeJob('parcel', id))} disabled={busyId === p._id}>
                           {busyId === p._id ? <Loader className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle className="w-4 h-4 mr-1" />} Mark as Delivered
+                        </Button>
+                      )}
+                      {p.status === 'ASSIGNED' && (
+                        <Button size="sm" variant="outline" className="text-destructive border-destructive/30" onClick={() => run(p._id, id => driverAPI.cancelJob('parcel', id))} disabled={busyId === p._id}>
+                          <Flag className="w-4 h-4 mr-1" /> Cancel Parcel
                         </Button>
                       )}
                     </div>
@@ -185,78 +208,97 @@ export function DriverJobs() {
             </Card>
           )}
 
-          {/* Ride Requests Section */}
-          <Card>
-            <CardHeader>
-              <h3 className="text-lg font-semibold">Ride Requests</h3>
-            </CardHeader>
-            <CardBody className="space-y-3">
-              {pendingRides.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No pending rides available right now.</p>
-              ) : (
-                pendingRides.map((r) => (
-                  <div key={r._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground">Ride · {r.type} · {formatInr(r.fare)}</p>
-                      <p className="text-sm text-muted-foreground line-clamp-1">{r.from} <span className="mx-1">→</span> {r.to}</p>
-                    </div>
-                    <Button size="sm" disabled={busyId === r._id} onClick={() => run(r._id, id => driverAPI.acceptJob('ride', id))}>
-                      {busyId === r._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Ride'}
-                    </Button>
-                  </div>
-                ))
-              )}
-            </CardBody>
-          </Card>
+          {/* Stuck state: driver is BUSY in DB but no active jobs exist → show self-heal button */}
+          {driverStatus === 'BUSY' && !hasActiveJob ? (
+            <div className="p-6 bg-amber-500/10 border border-amber-500/30 rounded-xl mt-4 text-center space-y-3">
+              <p className="font-semibold text-amber-600 dark:text-amber-400">⚠️ Your status is stuck as BUSY</p>
+              <p className="text-sm text-muted-foreground">No active job was found, but your status is marked BUSY. This can happen when a job was cancelled externally. Click below to reset.</p>
+              <Button size="sm" onClick={handleReset} disabled={busyId === '__reset__'} className="bg-amber-500 hover:bg-amber-600 text-white">
+                {busyId === '__reset__' ? <Loader className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                Reset My Status
+              </Button>
+            </div>
+          ) : driverStatus === 'BUSY' ? (
+            <div className="p-8 text-center bg-muted/20 rounded-xl border border-border mt-8">
+              <p className="text-lg font-medium text-foreground">You have an active job</p>
+              <p className="text-sm text-muted-foreground mt-1">Complete or cancel your current job to accept new ones.</p>
+            </div>
+          ) : (
+            <>
+              {/* Ride Requests Section */}
+              <Card>
+                <CardHeader>
+                  <h3 className="text-lg font-semibold">Ride Requests</h3>
+                </CardHeader>
+                <CardBody className="space-y-3">
+                  {pendingRides.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No pending rides available right now.</p>
+                  ) : (
+                    pendingRides.map((r) => (
+                      <div key={r._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
+                        <div className="flex-1">
+                          <p className="font-medium text-foreground">Ride · {r.type} · {formatInr(r.fare)}</p>
+                          <p className="text-sm text-muted-foreground line-clamp-1">{r.from} <span className="mx-1">→</span> {r.to}</p>
+                        </div>
+                        <Button size="sm" disabled={busyId === r._id || busyId !== ''} onClick={() => run(r._id, id => driverAPI.acceptJob('ride', id))}>
+                          {busyId === r._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Ride'}
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </CardBody>
+              </Card>
 
-          {/* Parcel Requests Section */}
-          <Card>
-            <CardHeader>
-              <h3 className="text-lg font-semibold">Parcel Requests</h3>
-            </CardHeader>
-            <CardBody className="space-y-3">
-              {availableParcels.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No pending parcels available right now.</p>
-              ) : (
-                availableParcels.map((p) => (
-                  <div key={p._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground">Parcel · {p.packageType || 'General'} · {formatInr(p.fare)}</p>
-                      {p.trackingCode && <p className="text-xs text-muted-foreground mb-1">ID: {p.trackingCode}</p>}
-                      <p className="text-sm text-muted-foreground line-clamp-1">{p.pickupAddress} <span className="mx-1">→</span> {p.dropoffAddress}</p>
-                    </div>
-                    <Button size="sm" disabled={busyId === p._id} onClick={() => run(p._id, id => driverAPI.acceptJob('parcel', id))}>
-                      {busyId === p._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Parcel'}
-                    </Button>
-                  </div>
-                ))
-              )}
-            </CardBody>
-          </Card>
+              {/* Parcel Requests Section */}
+              <Card>
+                <CardHeader>
+                  <h3 className="text-lg font-semibold">Parcel Requests</h3>
+                </CardHeader>
+                <CardBody className="space-y-3">
+                  {availableParcels.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No pending parcels available right now.</p>
+                  ) : (
+                    availableParcels.map((p) => (
+                      <div key={p._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
+                        <div className="flex-1">
+                          <p className="font-medium text-foreground">Parcel · {p.packageType || 'General'} · {formatInr(p.fare)}</p>
+                          {p.trackingCode && <p className="text-xs text-muted-foreground mb-1">ID: {p.trackingCode}</p>}
+                          <p className="text-sm text-muted-foreground line-clamp-1">{p.pickupAddress} <span className="mx-1">→</span> {p.dropoffAddress}</p>
+                        </div>
+                        <Button size="sm" disabled={busyId === p._id || busyId !== ''} onClick={() => run(p._id, id => driverAPI.acceptJob('parcel', id))}>
+                          {busyId === p._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Parcel'}
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </CardBody>
+              </Card>
 
-          {/* Carpool Requests Section */}
-          <Card>
-            <CardHeader>
-              <h3 className="text-lg font-semibold">Pool Requests</h3>
-            </CardHeader>
-            <CardBody className="space-y-3">
-              {pendingCarpools.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No pending pool rides available right now.</p>
-              ) : (
-                pendingCarpools.map((c) => (
-                  <div key={c._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground">Carpool · {c.totalSeats} seats · {formatInr(c.farePerPerson)}/seat</p>
-                      <p className="text-sm text-muted-foreground line-clamp-1">{c.from} <span className="mx-1">→</span> {c.to}</p>
-                    </div>
-                    <Button size="sm" disabled={busyId === c._id} onClick={() => run(c._id, id => driverAPI.acceptJob('carpool', id))}>
-                      {busyId === c._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Pool'}
-                    </Button>
-                  </div>
-                ))
-              )}
-            </CardBody>
-          </Card>
+              {/* Carpool Requests Section */}
+              <Card>
+                <CardHeader>
+                  <h3 className="text-lg font-semibold">Pool Requests</h3>
+                </CardHeader>
+                <CardBody className="space-y-3">
+                  {pendingCarpools.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No pending pool rides available right now.</p>
+                  ) : (
+                    pendingCarpools.map((c) => (
+                      <div key={c._id} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl border border-border">
+                        <div className="flex-1">
+                          <p className="font-medium text-foreground">Carpool · {c.totalSeats} seats · {formatInr(c.farePerPerson)}/seat</p>
+                          <p className="text-sm text-muted-foreground line-clamp-1">{c.from} <span className="mx-1">→</span> {c.to}</p>
+                        </div>
+                        <Button size="sm" disabled={busyId === c._id || busyId !== ''} onClick={() => run(c._id, id => driverAPI.acceptJob('carpool', id))}>
+                          {busyId === c._id ? <Loader className="w-4 h-4 animate-spin" /> : 'Accept Pool'}
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </CardBody>
+              </Card>
+            </>
+          )}
         </div>
       )}
     </PageContainer>

@@ -10,6 +10,7 @@ router.put('/profile', ctrl.updateProfile);
 router.get('/dashboard', ctrl.getDashboard);
 router.get('/jobs', ctrl.getJobs);
 router.get('/history', ctrl.getHistory);
+router.post('/jobs/reset-status', ctrl.resetStatus);
 router.post('/jobs/:type/:id/accept', ctrl.acceptJob);
 router.patch('/jobs/:type/:id/start', ctrl.startJob);
 router.patch('/jobs/:type/:id/complete', ctrl.completeJob);

@@ -91,7 +91,7 @@ exports.getParcel = async (req, res, next) => {
 exports.listAvailableParcels = async (req, res, next) => {
   try {
     const parcels = await Parcel.find({
-      status: 'scheduled',
+      status: 'PENDING',
       $or: [{ driverId: null }, { driverId: '' }],
     })
       .sort({ createdAt: -1 })
@@ -102,7 +102,10 @@ exports.listAvailableParcels = async (req, res, next) => {
 
 exports.listDriverParcels = async (req, res, next) => {
   try {
-    const parcels = await Parcel.find({ driverId: req.userId }).sort({ createdAt: -1 }).lean();
+    const parcels = await Parcel.find({ 
+      driverId: req.userId,
+      status: { $nin: ['DELIVERED', 'CANCELLED', 'delivered', 'cancelled'] }
+    }).sort({ createdAt: -1 }).lean();
     res.json({ parcels });
   } catch (err) { next(err); }
 };
@@ -111,7 +114,7 @@ exports.driverParcelHistory = async (req, res, next) => {
   try {
     const parcels = await Parcel.find({
       driverId: req.userId,
-      status: { $in: ['delivered', 'cancelled'] }
+      status: { $in: ['DELIVERED', 'CANCELLED'] }
     }).sort({ createdAt: -1 }).lean();
     res.json({ parcels });
   } catch (err) { next(err); }
@@ -119,7 +122,7 @@ exports.driverParcelHistory = async (req, res, next) => {
 
 exports.driverParcelEarnings = async (req, res, next) => {
   try {
-    const delivered = await Parcel.find({ driverId: req.userId, status: 'delivered' }).lean();
+    const delivered = await Parcel.find({ driverId: req.userId, status: 'DELIVERED' }).lean();
     const totalUsd = delivered.reduce((s, p) => s + Number(p.fare || 0), 0);
     res.json({
       deliveredCount: delivered.length,
@@ -134,13 +137,17 @@ exports.claimParcel = async (req, res, next) => {
     const parcel = await Parcel.findOneAndUpdate(
       {
         _id: req.params.id,
-        status: 'scheduled',
+        status: 'PENDING',
         $or: [{ driverId: null }, { driverId: '' }],
       },
-      { $set: { driverId: req.userId, driverName } },
+      { $set: { driverId: req.userId, driverName, status: 'ASSIGNED' } },
       { new: true },
     );
     if (!parcel) {
+      const existing = await Parcel.findById(req.params.id);
+      if (existing && existing.driverId === req.userId && existing.status === 'ASSIGNED') {
+        return res.json({ parcel: existing });
+      }
       return res.status(409).json({ error: 'Parcel is no longer available or already assigned' });
     }
 
@@ -161,28 +168,54 @@ exports.updateStatus = async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
 
-    const { status } = req.body;
+    let { status } = req.body;
+    status = status.toUpperCase();
+
     const parcel = await Parcel.findById(req.params.id);
     if (!parcel) return res.status(404).json({ error: 'Parcel not found' });
 
     const isOwner = parcel.userId === req.userId && req.userRole !== 'driver';
     const isDriver = req.userRole === 'driver' && parcel.driverId === req.userId;
 
-    if (status === 'cancelled') {
+    if (status === 'PENDING' && isDriver) {
+      parcel.status = 'PENDING';
+      parcel.driverId = null;
+      parcel.driverName = '';
+      parcel.rejectedBy.push(req.userId);
+      await parcel.save();
+
+      // Re-broadcast so other drivers can pick it up
+      await mq.publish('parcel.booked', {
+        ...parcel.toJSON(),
+        parcelId: parcel._id.toString()
+      });
+      // Tell driver-service to remove job from Redis and free the driver
+      await mq.publish('parcel.cancelled_for_driver', {
+        parcelId: parcel._id.toString(),
+        _id:      parcel._id.toString(),
+        driverId: req.userId,
+        trackingCode: parcel.trackingCode,
+      });
+      return res.json({ parcel });
+    }
+
+    if (status === 'CANCELLED') {
       if (!isOwner) {
         return res.status(403).json({ error: 'Only the customer who booked the parcel can cancel it' });
       }
-      if (['delivered', 'cancelled'].includes(parcel.status)) {
+      if (['DELIVERED', 'CANCELLED'].includes(parcel.status)) {
         return res.status(409).json({ error: 'Parcel cannot be cancelled' });
       }
-      parcel.status = 'cancelled';
+      parcel.status = 'CANCELLED';
       await parcel.save();
       if (parcel.driverId) {
         await mq.publish('parcel.cancelled_for_driver', {
-          driverId: parcel.driverId,
-          userId: parcel.userId,
+          parcelId:     parcel._id.toString(),
+          _id:          parcel._id.toString(),
+          driverId:     parcel.driverId,
+          userId:       parcel.userId,
           trackingCode: parcel.trackingCode,
-          pickupAddress: parcel.pickupAddress,
+          pickupAddress:  parcel.pickupAddress,
           dropoffAddress: parcel.dropoffAddress,
         });
       }
@@ -195,11 +228,11 @@ exports.updateStatus = async (req, res, next) => {
     if (parcel.driverId !== req.userId) {
       return res.status(403).json({ error: 'You are not assigned to this parcel' });
     }
-    if (['cancelled', 'delivered'].includes(parcel.status)) {
+    if (['CANCELLED', 'DELIVERED'].includes(parcel.status)) {
       return res.status(409).json({ error: 'Parcel is already finished' });
     }
 
-    const allowed = ['picked_up', 'in_transit', 'out_for_delivery', 'delivered'];
+    const allowed = ['PICKED_UP', 'DELIVERED'];
     if (!allowed.includes(status)) {
       return res.status(422).json({ error: 'Invalid status for driver update' });
     }
@@ -207,21 +240,14 @@ exports.updateStatus = async (req, res, next) => {
     parcel.status = status;
     await parcel.save();
 
-    if (status === 'picked_up') {
+    if (status === 'PICKED_UP') {
       await mq.publish('parcel.picked_up', {
         userId: parcel.userId,
         trackingCode: parcel.trackingCode,
         driverName: parcel.driverName,
       });
     }
-    if (status === 'out_for_delivery') {
-      await mq.publish('parcel.dispatched', {
-        parcelId: parcel._id.toString(),
-        userId: parcel.userId,
-        trackingCode: parcel.trackingCode,
-      });
-    }
-    if (status === 'delivered') {
+    if (status === 'DELIVERED') {
       await mq.publish('parcel.delivered', {
         _id: parcel._id.toString(),
         parcelId: parcel._id.toString(),

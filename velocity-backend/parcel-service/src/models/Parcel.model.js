@@ -10,11 +10,12 @@ const parcelSchema = new mongoose.Schema({
   estimatedTime:   { type: String  },
   status: {
     type: String,
-    enum: ['scheduled','picked_up','in_transit','out_for_delivery','delivered','cancelled'],
-    default: 'scheduled'
+    enum: ['PENDING','ASSIGNED','PICKED_UP','DELIVERED','CANCELLED'],
+    default: 'PENDING'
   },
   driverId:     { type: String, default: null, index: true },
   driverName:   { type: String, default: '' },
+  rejectedBy:   { type: [String], default: [] },
   trackingCode: { type: String, unique: true },
 }, { timestamps: true });
 

@@ -389,7 +389,7 @@ export function ParcelDelivery() {
                     Progress (picked up → delivered) is updated by your assigned driver. Pull to refresh with the button on the list.
                   </p>
 
-                  {selectedParcel.status !== 'delivered' && selectedParcel.status !== 'cancelled' && (
+                  {!(selectedParcel.status || '').toUpperCase().includes('DELIVERED') && !(selectedParcel.status || '').toUpperCase().includes('CANCELLED') && (
                     <Button
                       variant="outline"
                       fullWidth
