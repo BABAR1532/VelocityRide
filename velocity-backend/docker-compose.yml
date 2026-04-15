@@ -36,6 +36,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: velocity-redis-commander
+    restart: unless-stopped
+    ports:
+      - '8081:8081'
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - velocity-net
 
   rabbitmq:
     image: rabbitmq:3-management
